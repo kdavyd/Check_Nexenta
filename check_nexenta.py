@@ -24,15 +24,19 @@
 #                               space thresholds, added volume
 #                               compression to performance data
 #                               and extra support for HA clusters
-# 2012/11/02 v1.0.3 Brenn Oosterbaan - python 2.4 compatible
-# 2013/13/02 v1.0.4 Brenn Oosterbaan - added 2 retries for API connect
-# 2013/14/02 v1.0.5 Patrick - added https and snmp v2 support
-# 2013/15/02 v1.0.6 Brenn Oosterbaan - simplified snmp v2/v3 support
-# 2013/16/02 v1.0.7 Brenn Oosterbaan - only lookup hostname once
-# 2013/24/06 v1.0.8 Brenn Oosterbaan - added option to IGNORE messages
-# 2013/22/08 v1.0.9 Brenn Oosterbaan - added option to change only
+# 2012/02/11 v1.0.3 Brenn Oosterbaan - python 2.4 compatible
+# 2013/02/13 v1.0.4 Brenn Oosterbaan - added 2 retries for API connect
+# 2013/02/14 v1.0.5 Patrick - added https and snmp v2 support
+# 2013/02/15 v1.0.6 Brenn Oosterbaan - simplified snmp v2/v3 support
+# 2013/02/16 v1.0.7 Brenn Oosterbaan - only lookup hostname once
+# 2013/06/24 v1.0.8 Brenn Oosterbaan - added option to IGNORE messages
+# 2013/08/22 v1.0.9 Brenn Oosterbaan - added option to change only
 #                                severity for known errors, and 
 #                                improved code readability
+# 2013/11/18 v1.0.10 Brenn Oosterbaan - handle NMS unresponiveness
+# 2014/05/24 v1.0.11 Brenn Oosterbaan - bugfix in NMS unresponiveness
+# 2014/07/02 v1.0.12 Brenn Oosterbaan - bugfix in ReadConfig
+# 2014/07/02 v1.0.13 Brenn Oosterbaan - added nms retry value
 # ----------------------------------------------------------------
 # ----------------------------------------------------------------
 # Schuberg Philis 2012
@@ -50,6 +54,7 @@ import os
 import sys
 import urllib2
 import socket
+import time
 
 try:
     import json
@@ -89,7 +94,7 @@ class ReadConfig:
     # Default to <scriptname>.cfg if no configfile was given.
     def open_config(self, configfile):
         if not configfile:
-            configfile = os.path.abspath(__file__).split(".")[0] + ".cfg"
+            configfile = os.path.splitext(os.path.abspath(__file__))[0] + ".cfg"
         elif not os.path.dirname(configfile):
             configfile = os.path.join(os.path.dirname(__file__), configfile)
 
@@ -122,8 +127,12 @@ class NexentaApi:
         cfg = ReadConfig()
         username = cfg.get_option(nexenta['hostname'], 'api_user')
         password = cfg.get_option(nexenta['hostname'], 'api_pass')
+        self.nms_retry = cfg.get_option(nexenta['hostname'], 'nms_retry')
+
         if not username or not password:
             raise CritError("No connection info configured for %s" % nexenta['hostname'])
+        if not self.nms_retry:
+            self.nms_retry = 2
         
         ssl = cfg.get_option(nexenta['hostname'], 'api_ssl')
         if ssl != "ON":
@@ -147,14 +156,18 @@ class NexentaApi:
         request.add_header('Authorization', 'Basic %s' % self.base64_string)
         request.add_header('Content-Type' , 'application/json')
 
-        # Try to connect max 2 times.
-        tries = 2
+        # Try to connect max <nms_retry> times. Sleep 20 seconds if NMS connection error occurs.
+        tries = int(self.nms_retry)
         while tries:
             try:
                 response = json.loads(urllib2.urlopen(request).read())
+                if response['error'] and "Cannot introspect object com.nexenta.nms" in response['error']['message']:
+                    raise Exception("NMS unresponsive")
                 break
-            except urllib2.URLError:
+            except (urllib2.URLError, Exception):
                 tries += -1
+                time.sleep(20)
+
         if not tries:
             raise CritError("Unable to connect to API at %s" % (self.url))
 
@@ -629,6 +642,8 @@ def print_usage():
     print "                  Snapshot thresholds can be a percentage of space used(%),"
     print "                  amount of space used([M,G,T]) or IGNORE."
     print "                  DEFAULT thresholds are applied to all folders not specified."
+    print "nms_retry       : Sets the max number of retries when NMS is unresponsive."
+    print "                  Defaults to 2 if not set."
     print "[known_errors]  : Convert severity and/or description of known error messages."
     print "                  Can consist of multiple error messages formatted as"
     print "                  <error message> = <severity>;<description>."
@@ -644,7 +659,7 @@ def print_usage():
     sys.exit()
 
 def print_version():
-    print "Version 1.0.9"
+    print "Version 1.0.13"
     sys.exit()
 
 if __name__ == '__main__':
